@@ -1,0 +1,20 @@
+code_name: 'UNKNOWN'
+docker:
+  image_name: 'mdiengine'
+
+  build_image:
+    - echo "Insert commands to build the environment for the engine here"
+    - echo "This will often include using apt-get or pip to install dependencies"
+
+  build_engine:
+    - echo "Insert commands to build your engine code here"
+
+  validate_engine:
+    - echo "Insert code that will confirm that your code has been built successfully"
+    - exit 1
+
+engine_tests:
+  # Provide at least one example input that can be used to test your code's MDI functionality
+  script:
+    - echo "Insert commands to run an example calculation here"
+    - exit 1
