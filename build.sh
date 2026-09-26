@@ -56,8 +56,8 @@ cp "$HERE/src/makefile_mdi" "$GPUMD_SRC_DIR/"
 cd "$GPUMD_SRC_DIR"
 
 if [[ $# -gt 0 ]]; then
-  echo "==> Building with: make -f makefile_mdi $*"
-  exec make -f makefile_mdi "$@"
+  echo "==> Building with: make -f makefile_mdi USE_MDI=1 MDI_LIB=1 $*"
+  exec make -f makefile_mdi USE_MDI=1 MDI_LIB=1 "$@"
 fi
 
 echo "==> Building with: make -f makefile_mdi USE_MDI=1 MDI_LIB=1"

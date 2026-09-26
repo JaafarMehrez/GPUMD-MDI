@@ -31,6 +31,14 @@ cd GPUMD-MDI
 
 The `gpumd-mdi` executable is produced in `/path/to/GPUMD/src/`.
 
+Alternatively, use the provided `Dockerfile` for a reproducible, self-contained
+build environment (CUDA + MDI library + GPUMD + this interface):
+
+```bash
+docker build -t gpumd-mdi .
+docker run --rm -it --gpus all gpumd-mdi /opt/GPUMD-MDI/build.sh /opt/GPUMD
+```
+
 See [doc/README.md](doc/README.md) for full build and usage instructions,
 driver/engine examples, and the list of supported MDI commands.
 
@@ -42,6 +50,9 @@ src/makefile_mdi       Build rules for the gpumd-mdi executable
 doc/README.md          Build + usage documentation
 examples/gpumd_mdi/    Minimal GPUMD–VASP MDI example (Cu dimer)
 tools/gpumd-mdi/       VASP MDI driver (Python) + launcher script
+Dockerfile             Reproducible containerized build (CUDA + MDI + GPUMD)
+build.sh               Builds gpumd-mdi against a GPUMD checkout
+.github/workflows/     CI: periodic build against GPUMD master
 ```
 
 ## Running the VASP example
