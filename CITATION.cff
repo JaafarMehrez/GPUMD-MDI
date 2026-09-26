@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below and also cite GPUMD and the MDI library."
+title: "GPUMD-MDI: MDI (MolSSI Driver Interface) integration for GPUMD"
+abstract: >-
+  MDI interface allowing GPUMD to run as an MDI ENGINE coupled to external
+  codes such as VASP. Maintained separately from the main GPUMD repository.
+authors:
+  - family-names: Mehrez
+    given-names: Jaafar
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+    affiliation: "HPQC Labs"
+date-released: "2026-09-24"
+version: "0.1.0"
+license: "GPL-3.0-or-later"
+keywords:
+  - molecular dynamics
+  - MDI
+  - GPUMD
+  - QM/MM
+  - GPU
+url: "https://github.com/JaafarMehrez/GPUMD-MDI"
+preferred-citation:
+  type: software
+  title: "GPUMD-MDI: MDI (MolSSI Driver Interface) integration for GPUMD"
+  authors:
+    - family-names: Mehrez
+      given-names: Jaafar
+  year: 2026
+  url: "https://github.com/JaafarMehrez/GPUMD-MDI"

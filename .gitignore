@@ -1,0 +1,36 @@
+# Build artifacts
+*.o
+*.obj
+*.mod
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+gpumd-mdi
+
+# VASP example runtime outputs
+examples/gpumd_mdi/.gpumd_vasp_tmp/
+examples/gpumd_mdi/.gpumd_logs/
+examples/gpumd_mdi/POSCAR
+examples/gpumd_mdi/OUTCAR
+examples/gpumd_mdi/vasprun.xml
+examples/gpumd_mdi/OSZICAR
+examples/gpumd_mdi/CONTCAR
+examples/gpumd_mdi/CHGCAR
+examples/gpumd_mdi/WAVECAR
+examples/gpumd_mdi/INCAR
+examples/gpumd_mdi/KPOINTS
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,94 @@
+# Build the MDI interface against the latest GPUMD master.
+#
+# This is the key check that keeps the interface compatible as GPUMD is
+# refactored: it compiles and links `gpumd-mdi` against the current master on
+# a schedule, so upstream API drift is caught automatically instead of
+# surfacing as silent breakage for users.
+#
+# Compiled on CPU runners (no GPU needed to build/link; running MDI requires
+# a GPU at runtime).
+
+name: Build against GPUMD master
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  schedule:
+    # Weekly on Monday 03:00 UTC
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  compile-check:
+    name: Compile MDI sources against GPUMD master
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.2.2-devel-ubuntu22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git make g++ ca-certificates
+
+      - name: Clone GPUMD master
+        run: git clone --depth 1 https://github.com/brucefan1983/GPUMD.git $HOME/GPUMD
+
+      - name: Checkout GPUMD-MDI
+        uses: actions/checkout@v4
+        with:
+          path: GPUMD-MDI
+
+      - name: Copy MDI sources into GPUMD
+        run: |
+          cp -r GPUMD-MDI/src/main_mdi $HOME/GPUMD/src/
+          cp GPUMD-MDI/src/makefile_mdi $HOME/GPUMD/src/
+
+      - name: Compile MDI translation units (-DUSE_MDI, catches API drift)
+        working-directory: $HOME/GPUMD/src
+        run: |
+          for f in main_mdi/*.cu; do
+            nvcc -std=c++14 -O3 -arch=sm_70 -DUSE_MDI -I. -Imain_gpumd \
+                 -c "$f" -o "/tmp/$(basename "$f" .cu).o"
+          done
+
+  link-with-mdi-library:
+    name: Link gpumd-mdi with the real MDI library
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.2.2-devel-ubuntu22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git make g++ cmake ca-certificates
+
+      - name: Clone GPUMD master
+        run: git clone --depth 1 https://github.com/brucefan1983/GPUMD.git $HOME/GPUMD
+
+      - name: Clone and install MDI Library
+        run: |
+          git clone --depth 1 https://github.com/MolSSI-MDI/MDI_Library.git $HOME/MDI_Library
+          cmake -S $HOME/MDI_Library -B $HOME/MDI_Library/build \
+                -DCMAKE_INSTALL_PREFIX=$HOME/mdi-install
+          cmake --build $HOME/MDI_Library/build -j2
+          cmake --install $HOME/MDI_Library/build
+
+      - name: Checkout GPUMD-MDI
+        uses: actions/checkout@v4
+        with:
+          path: GPUMD-MDI
+
+      - name: Copy MDI sources into GPUMD
+        run: |
+          cp -r GPUMD-MDI/src/main_mdi $HOME/GPUMD/src/
+          cp GPUMD-MDI/src/makefile_mdi $HOME/GPUMD/src/
+
+      - name: Build gpumd-mdi (USE_MDI + MDI_LIB)
+        working-directory: $HOME/GPUMD/src
+        run: |
+          make -f makefile_mdi -j2 USE_MDI=1 MDI_LIB=1 \
+            MDI_LIB_PATH=$HOME/mdi-install/lib \
+            MDI_INC_PATH=$HOME/mdi-install/include
+          test -x gpumd-mdi
+          echo "gpumd-mdi built successfully"
