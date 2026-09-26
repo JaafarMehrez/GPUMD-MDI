@@ -5,13 +5,9 @@ allowing GPUMD to run as an MDI ENGINE coupled to other codes (e.g. VASP as a QM
 
 > **Status:** maintained separately from the main GPUMD repository.
 > The interface previously lived in the [GPUMD](https://github.com/brucefan1983/GPUMD) repo
-> (`src/main_mdi/`) and was moved out to keep the GPUMD core lean.
+> (`src/main_mdi/`) and was moved out to keep the GPUMD core clean.
 > See [GPUMD issue #1786](https://github.com/brucefan1983/GPUMD/issues/1786) for context.
 > The full implementation and history remain available in the GPUMD git history.
-
-This package follows the same pattern as
-[GPUMD-PySAGES](https://github.com/JaafarMehrez/GPUMD-PySAGES): it contains the interface
-sources and a small build script that injects them into any GPUMD checkout.
 
 ## Requirements
 
