@@ -17,6 +17,7 @@
 #include "utilities/error.cuh"
 #include "utilities/gpu_macro.cuh"
 #include "utilities/main_common.cuh"
+#include "utilities/run_input.cuh"
 #include <chrono>
 #include <cstring>
 #include <stdio.h>
@@ -31,10 +32,10 @@ void print_welcome_information();
 
 int main(int argc, char* argv[])
 {
-  const char* run_input = "run.in";
+  const char* run_input_file = "run.in";
   for (int i = 1; i < argc - 1; ++i) {
     if (std::strcmp(argv[i], "-in") == 0) {
-      run_input = argv[i + 1];
+      run_input_file = argv[i + 1];
       break;
     }
   }
@@ -42,7 +43,9 @@ int main(int argc, char* argv[])
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--mdi") == 0) {
 #ifdef USE_MDI
-      Run run_for_mdi(true, run_input); // skip run commands - MDI will control stepping
+      // Parse run.in but let MDI control the stepping (skip 'run' commands).
+      RunInput run_input(run_input_file);
+      Run run_for_mdi(run_input, true);
       return mdi_engine_main(&run_for_mdi, argc, argv);
 #else
       printf("MDI support not enabled at build time. Rebuild with USE_MDI=1.\n");
@@ -50,6 +53,7 @@ int main(int argc, char* argv[])
 #endif
     }
   }
+
   print_welcome_information();
   print_compile_information();
   print_gpu_information();
@@ -61,7 +65,8 @@ int main(int argc, char* argv[])
   CHECK(gpuDeviceSynchronize());
   const auto time_begin = std::chrono::high_resolution_clock::now();
 
-  Run run(false, run_input);
+  RunInput run_input(run_input_file);
+  Run run(run_input);
 
   CHECK(gpuDeviceSynchronize());
   const auto time_finish = std::chrono::high_resolution_clock::now();
@@ -84,7 +89,7 @@ void print_welcome_information(void)
   printf("***************************************************************\n");
   printf("*                 Welcome to use GPUMD                        *\n");
   printf("*     (Graphics Processing Units Molecular Dynamics)          *\n");
-  printf("*                     version 5.7                             *\n");
+  printf("*                   version 5.9.1                             *\n");
   printf("*      This is the gpumd executable with MDI support          *\n");
   printf("***************************************************************\n");
   printf("\n");

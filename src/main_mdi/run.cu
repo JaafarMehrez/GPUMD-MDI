@@ -17,46 +17,11 @@
 Run simulation according to the inputs in the run.in file.
 ------------------------------------------------------------------------------*/
 
-#include "add_efield.cuh"
-#include "add_force.cuh"
-#include "add_spring.cuh"
-#include "add_random_force.cuh"
 #include "cohesive.cuh"
-#include "electron_stop.cuh"
 #include "force/force.cuh"
 #include "integrate/ensemble.cuh"
 #include "integrate/integrate.cuh"
-#include "measure/active.cuh"
-#include "measure/adf.cuh"
-#include "measure/angular_rdf.cuh"
-#include "measure/compute.cuh"
-#include "measure/compute_dpdt.cuh"
-#include "measure/dos.cuh"
-#include "measure/dump_beads.cuh"
-#include "measure/dump_dipole.cuh"
-#include "measure/dump_netcdf.cuh"
-#include "measure/dump_observer.cuh"
-#include "measure/dump_polarizability.cuh"
-#include "measure/dump_restart.cuh"
-#include "measure/dump_shock_nemd.cuh"
-#include "measure/dump_thermo.cuh"
-#include "measure/dump_xyz.cuh"
-#include "measure/dump_cg.cuh"
-#include "measure/extrapolation.cuh"
-#include "measure/hac.cuh"
-#include "measure/hnemd_kappa.cuh"
-#include "measure/hnemdec_kappa.cuh"
-#include "measure/lsqt.cuh"
 #include "measure/measure.cuh"
-#include "measure/modal_analysis.cuh"
-#include "measure/msd.cuh"
-#include "measure/orientorder.cuh"
-#include "measure/plumed.cuh"
-#include "measure/action.cuh"
-#include "measure/rdf.cuh"
-#include "measure/sdc.cuh"
-#include "measure/shc.cuh"
-#include "measure/viscosity.cuh"
 #include "minimize/minimize.cuh"
 #include "model/box.cuh"
 #include "model/read_xyz.cuh"
@@ -64,12 +29,13 @@ Run simulation according to the inputs in the run.in file.
 #include "replicate.cuh"
 #include "run.cuh"
 #include "utilities/error.cuh"
+#include "utilities/compact_nep.cuh"
 #include "utilities/gpu_macro.cuh"
 #include "utilities/read_file.cuh"
+#include "utilities/run_input.cuh"
 #include "velocity.cuh"
 #include <algorithm>
 #include <chrono>
-#include <cstring>
 
 static __global__ void gpu_find_largest_v2(
   int N, int number_of_rounds, double* g_vx, double* g_vy, double* g_vz, double* g_v2_max)
@@ -139,69 +105,97 @@ static void calculate_time_step(
   }
 }
 
-Run::Run(bool skip_run, const std::string& run_input_path)
+static bool parse_initial_replicate(
+  const RunInput& run_input, int replicate_size[3])
 {
-  skip_run_commands = skip_run;
-  run_input_file = run_input_path;
+  for (const auto& line : run_input.lines()) {
+    if (line.tokens.empty()) {
+      continue;
+    }
+    if (line.tokens[0] != "replicate") {
+      return false;
+    }
+    parse_replicate(line.tokens, replicate_size);
+    return true;
+  }
+  return false;
+}
+
+Run::Run(const RunInput& run_input, bool skip_run_commands)
+{
+  skip_run_commands_ = skip_run_commands;
 
   print_line_1();
   printf("Started initializing positions and related parameters.\n");
   fflush(stdout);
   print_line_2();
 
-  initialize_position(has_velocity_in_xyz, number_of_types, box, group, atom);
+  has_replicate_ = parse_initial_replicate(run_input, replicate_size_);
 
-  allocate_memory_gpu(group, atom, thermo);
-
-  velocity.initialize(
+  initialize_position(
+    run_input,
     has_velocity_in_xyz,
-    300,
-    atom.cpu_mass,
-    atom.cpu_position_per_atom,
-    atom.cpu_velocity_per_atom,
-    atom.velocity_per_atom,
-    false,
-    123);
+    number_of_types,
+    box,
+    group,
+    atom);
+  first_potential_filename_ = get_first_potential_filename(run_input);
+
+  if (has_replicate_) {
+    Replicate(replicate_size_, box, atom, group);
+  }
+
+  if (atom.number_of_atoms < 2) {
+    PRINT_INPUT_ERROR("Number of atoms should >= 2.");
+  }
+
+  velocity.initialize_cpu(
+    has_velocity_in_xyz, 300, atom, false, 123);
+
   if (has_velocity_in_xyz) {
     printf("Initialized velocities with data in model.xyz.\n");
   } else {
     printf("Initialized velocities with default T = 300 K.\n");
   }
 
+  allocate_memory_gpu(group, atom, thermo);
+
   print_line_1();
   printf("Finished initializing positions and related parameters.\n");
   fflush(stdout);
   print_line_2();
 
-  execute_run_in();
+  execute_run_in(run_input);
 }
 
-void Run::execute_run_in()
+void Run::execute_run_in(const RunInput& run_input)
 {
   print_line_1();
-  printf("Started executing the commands in %s.\n", run_input_file.c_str());
+  printf("Started executing the commands in run.in.\n");
   fflush(stdout);
   print_line_2();
 
-  std::ifstream input(run_input_file);
-  if (!input.is_open()) {
-    std::cout << "Failed to open " << run_input_file << "." << std::endl;
-    exit(1);
+  bool first_effective_command = true;
+  for (const auto& line : run_input.lines()) {
+    if (!line.tokens.empty()) {
+      std::vector<std::string> tokens = line.tokens;
+      if (tokens.size() >= 2 && tokens[0] == "potential") {
+        tokens[1] = get_compact_nep_filename(tokens[1]);
+      }
+      if (has_replicate_ && first_effective_command &&
+          tokens[0] == "replicate") {
+        first_effective_command = false;
+        continue;
+      }
+      first_effective_command = false;
+      parse_one_keyword(tokens, run_input);
+    }
   }
 
-  while (input.peek() != EOF) {
-    std::vector<std::string> tokens = get_tokens(input);
-    std::vector<std::string> tokens_without_comments;
-    for (const auto& t : tokens) {
-      if (t[0] != '#') {
-        tokens_without_comments.emplace_back(t);
-      } else {
-        break;
-      }
-    }
-    if (tokens_without_comments.size() > 0) {
-      parse_one_keyword(tokens_without_comments);
-    }
+  // In MDI mode the integrator/ensemble is intentionally kept alive so that the
+  // MDI command loop can drive single steps (see mdi_initialize_for_mdi()).
+  if (!skip_run_commands_ && integrate.has_ensemble()) {
+    PRINT_INPUT_ERROR("The last ensemble is not followed by a run.");
   }
 
   print_line_1();
@@ -209,18 +203,12 @@ void Run::execute_run_in()
   fflush(stdout);
   print_line_2();
 
-  input.close();
 }
 
-void Run::perform_a_run()
+void Run::compute_force()
 {
-  integrate.initialize(time_step, atom, box, group, thermo, number_of_steps);
-  mc.initialize();
-  measure.pre_run(number_of_steps, time_step, integrate, group, atom, box, force);
-
-  // compute force for the first integrate step
-  if (integrate.type >= 31) { // PIMD
-    for (int k = 0; k < integrate.number_of_beads; ++k) {
+  if (is_pimd(integrate.get_type())) {
+    for (int k = 0; k < integrate.get_number_of_beads(); ++k) {
       force.compute(
         box,
         atom.position_beads[k],
@@ -242,8 +230,20 @@ void Run::perform_a_run()
       atom.force_per_atom,
       atom.virial_per_atom,
       atom.velocity_per_atom,
-      atom.mass);
+      atom.mass,
+      atom.position_image.size() > 0 ? atom.position_image.data() : nullptr);
   }
+}
+
+void Run::perform_a_run(const int number_of_steps)
+{
+  integrate.initialize(time_step, atom, box, group);
+  measure.pre_run(number_of_steps, time_step, integrate, group, atom, box, force);
+
+  // setup force for the first integrate step
+  compute_force();
+  atom.update_unwrapped_position(box);
+  measure.setup_force(time_step, integrate, group, atom, box, force);
 
   double initial_time_step = time_step;
 
@@ -251,65 +251,34 @@ void Run::perform_a_run()
 
   for (int step = 0; step < number_of_steps; ++step) {
 
-    velocity.correct_velocity(
-      step,
-      group,
-      atom.cpu_mass,
-      atom.position_per_atom,
-      atom.cpu_position_per_atom,
-      atom.cpu_velocity_per_atom,
-      atom.velocity_per_atom);
+    velocity.correct_velocity(step, group, atom);
 
     calculate_time_step(
       max_distance_per_step, atom.velocity_per_atom, initial_time_step, time_step);
     global_time += time_step;
 
-    integrate.current_step = step;
-    integrate.compute1(time_step, double(step) / number_of_steps, group, box, atom, thermo);
+    integrate.compute1(time_step, step, number_of_steps, group, box, atom, thermo);
 
-    if (integrate.type >= 31) { // PIMD
-      for (int k = 0; k < integrate.number_of_beads; ++k) {
-        force.compute(
-          box,
-          atom.position_beads[k],
-          atom.type,
-          group,
-          atom.potential_beads[k],
-          atom.force_beads[k],
-          atom.virial_beads[k],
-          atom.velocity_beads[k],
-          atom.mass);
-      }
-    } else {
-      force.compute(
-        box,
-        atom.position_per_atom,
-        atom.type,
-        group,
-        atom.potential_per_atom,
-        atom.force_per_atom,
-        atom.virial_per_atom,
-        atom.velocity_per_atom,
-        atom.mass);
-    }
+    measure.post_integrate1(step, time_step, integrate, group, atom, box, force);
 
-    electron_stop.compute(time_step, atom);
-    add_force.compute(step, group, atom);
-    add_spring.compute(step, group, atom);
-    add_random_force.compute(step, atom);
-    add_efield.compute(step, group, atom, force);
+    force.advance_temperature();
 
-    integrate.compute2(time_step, double(step) / number_of_steps, group, box, atom, thermo, force);
+    measure.pre_force(step, time_step, integrate, group, atom, box, force);
+    compute_force();
 
-    mc.compute(step, number_of_steps, atom, box, group);
+    atom.update_unwrapped_position(box);
+    measure.post_force(step, time_step, integrate, group, atom, box, force);
+
+    integrate.compute2(time_step, step, number_of_steps, group, box, atom, thermo, force);
+    atom.update_unwrapped_position(box);
 
     measure.end_of_step(
       number_of_steps,
       step,
-      integrate.fixed_group,
-      integrate.move_group,
+      integrate.get_fixed_group(),
+      integrate.get_move_group(),
       global_time,
-      integrate.temperature2,
+      integrate.get_temperature2(),
       integrate,
       box,
       group,
@@ -333,21 +302,19 @@ void Run::perform_a_run()
   printf("Speed of this run = %g atom*step/second.\n", run_speed);
   print_line_2();
 
-  measure.post_run(atom, box, integrate, number_of_steps, time_step, integrate.temperature2);
+  measure.post_run(
+    atom, box, integrate, number_of_steps, time_step, integrate.get_temperature2());
 
-  electron_stop.finalize();
-  add_force.finalize();
-  add_spring.finalize();
-  add_random_force.finalize();
-  add_efield.finalize();
-  integrate.finalize();
-  mc.finalize();
+  integrate.finalize(atom, box);
   velocity.finalize();
   force.finalize();
   max_distance_per_step = 0.0;
 }
 
+// -----------------------------------------------------------------------------
 // MDI helper implementations
+// -----------------------------------------------------------------------------
+
 int Run::mdi_get_natoms() { return atom.number_of_atoms; }
 
 void Run::mdi_get_positions(std::vector<double>& out_positions)
@@ -360,36 +327,13 @@ void Run::mdi_get_positions(std::vector<double>& out_positions)
 void Run::mdi_set_positions(const double* positions)
 {
   const int N = atom.number_of_atoms;
-  atom.position_per_atom.copy_from_host(positions, N * 3);
+  atom.position_per_atom.copy_from_host(positions, (size_t)(N * 3));
+  atom.update_unwrapped_position(box);
 }
 
 void Run::mdi_compute_forces()
 {
-  if (integrate.type >= 31) { // PIMD
-    for (int k = 0; k < integrate.number_of_beads; ++k) {
-      force.compute(
-        box,
-        atom.position_beads[k],
-        atom.type,
-        group,
-        atom.potential_beads[k],
-        atom.force_beads[k],
-        atom.virial_beads[k],
-        atom.velocity_beads[k],
-        atom.mass);
-    }
-  } else {
-    force.compute(
-      box,
-      atom.position_per_atom,
-      atom.type,
-      group,
-      atom.potential_per_atom,
-      atom.force_per_atom,
-      atom.virial_per_atom,
-      atom.velocity_per_atom,
-      atom.mass);
-  }
+  compute_force();
 }
 
 void Run::mdi_get_forces(std::vector<double>& out_forces)
@@ -408,11 +352,10 @@ void Run::mdi_get_potential(std::vector<double>& out_potential)
 
 void Run::mdi_set_forces(const double* forces)
 {
-  /* Set external forces from QM code (e.g., VASP) into GPUMD */
+  // Set external forces from a QM code (e.g. VASP) into GPUMD.
   const int N = atom.number_of_atoms;
-  /* Copy forces from host to device GPU memory */
   atom.force_per_atom.copy_from_host(forces, (size_t)(N * 3));
-  /* mark that external forces should be used for the next integrate */
+  // mark that external forces should be used for the next integrate step
   external_forces_pending = true;
   printf("[MDI] Forces set from external QM calculation (external_forces_pending=1)\n");
 }
@@ -433,55 +376,59 @@ void Run::mdi_set_stress(const double* stress_3x3)
 
 void Run::mdi_initialize_for_mdi()
 {
-  // initialize integrator, mc, and measure for single-step operation
-  int one_steps = 1;
-  integrate.initialize(time_step, atom, box, group, thermo, one_steps);
-  mc.initialize();
-  measure.pre_run(one_steps, time_step, integrate, group, atom, box, force);
-  // reset MDI step counter so dump intervals behave predictably
+  // Prepare the integrator/measure actions for single-step operation. This
+  // mirrors the setup done at the beginning of perform_a_run().
+  const int requested_steps = (mdi_number_of_steps_ > 0) ? mdi_number_of_steps_ : 1;
+  integrate.initialize(time_step, atom, box, group);
+  measure.pre_run(requested_steps, time_step, integrate, group, atom, box, force);
+  compute_force();
+  atom.update_unwrapped_position(box);
+  measure.setup_force(time_step, integrate, group, atom, box, force);
   mdi_step_counter = 0;
+  mdi_initial_time_step_ = time_step;
 }
 
 void Run::mdi_finalize_for_mdi()
 {
-  measure.post_run(atom, box, integrate, 1, time_step, integrate.temperature2);
-  electron_stop.finalize();
-  add_force.finalize();
-  add_spring.finalize();
-  add_random_force.finalize();
-  add_efield.finalize();
-  integrate.finalize();
-  mc.finalize();
+  // Mirror the teardown done at the end of perform_a_run().
+  const int requested_steps = (mdi_number_of_steps_ > 0) ? mdi_number_of_steps_ : 1;
+  measure.post_run(atom, box, integrate, requested_steps, time_step, integrate.get_temperature2());
+  integrate.finalize(atom, box);
   velocity.finalize();
   force.finalize();
 }
 
 void Run::mdi_step_one()
 {
-  // Perform a single integration step similar to one iteration of perform_a_run(),
-  // so that output (e.g., dump_xyz -> the requested file) continues to work in MDI mode.
+  // Perform a single integration step similar to one iteration of
+  // perform_a_run(), so that dump_* / compute_* keywords keep working in MDI
+  // mode. When forces were supplied by the driver (mdi_set_forces), the
+  // internal potential is skipped for that step.
   //
-  // Notes:
-  // - We intentionally do not call the internal potential when external forces are provided.
-  // - measure.end_of_step is called every step, enabling dump_* keywords to write outputs.
-  velocity.correct_velocity(
-    mdi_step_counter,
-    group,
-    atom.cpu_mass,
-    atom.position_per_atom,
-    atom.cpu_position_per_atom,
-    atom.cpu_velocity_per_atom,
-    atom.velocity_per_atom);
+  // The MDI driver controls how many steps are taken, so we advance the step
+  // counter monotonically (proper thermostat-chain indexing and a one-time
+  // first-step initialization) and keep the temperature-ramp denominator at
+  // the requested run length; once the driver goes past it, the denominator
+  // tracks the step so the ratio saturates at 1 instead of growing unbounded.
+  const int requested_steps = (mdi_number_of_steps_ > 0) ? mdi_number_of_steps_ : 1;
+  const int ramp_steps =
+    (mdi_step_counter < requested_steps) ? requested_steps : mdi_step_counter + 1;
 
-  integrate.current_step = mdi_step_counter;
+  velocity.correct_velocity(mdi_step_counter, group, atom);
+
+  calculate_time_step(
+    max_distance_per_step, atom.velocity_per_atom, mdi_initial_time_step_, time_step);
   global_time += time_step;
 
-  integrate.compute1(time_step, 0.0, group, box, atom, thermo);
-  // compute forces only if no external forces were provided by driver
+  integrate.compute1(time_step, mdi_step_counter, ramp_steps, group, box, atom, thermo);
+  measure.post_integrate1(mdi_step_counter, time_step, integrate, group, atom, box, force);
+
+  force.advance_temperature();
+
+  measure.pre_force(mdi_step_counter, time_step, integrate, group, atom, box, force);
   if (!external_forces_pending) {
-    mdi_compute_forces();
+    compute_force();
   } else {
-    /* use forces already present in atom.force_per_atom (set by mdi_set_forces) */
     printf("[MDI] Using external forces for integration\n");
   }
 
@@ -520,23 +467,20 @@ void Run::mdi_step_one()
     external_stress_pending = false;
   }
 
-  electron_stop.compute(time_step, atom);
-  add_force.compute(mdi_step_counter, group, atom);
-  add_spring.compute(mdi_step_counter, group, atom);
-  add_random_force.compute(mdi_step_counter, atom);
-  add_efield.compute(mdi_step_counter, group, atom, force);
+  atom.update_unwrapped_position(box);
+  measure.post_force(mdi_step_counter, time_step, integrate, group, atom, box, force);
 
-  integrate.compute2(time_step, 0.0, group, box, atom, thermo, force);
+  integrate.compute2(time_step, mdi_step_counter, ramp_steps, group, box, atom, thermo, force);
+  atom.update_unwrapped_position(box);
 
-  // Keep MC / measure behavior consistent with normal runs (important for dump_* outputs)
-  mc.compute(mdi_step_counter, 1, atom, box, group);
+  // Keep measure behavior consistent with normal runs (important for dump_* outputs).
   measure.end_of_step(
-    1,
+    requested_steps,
     mdi_step_counter,
-    integrate.fixed_group,
-    integrate.move_group,
+    integrate.get_fixed_group(),
+    integrate.get_move_group(),
     global_time,
-    integrate.temperature2,
+    integrate.get_temperature2(),
     integrate,
     box,
     group,
@@ -545,305 +489,141 @@ void Run::mdi_step_one()
     force);
 
   mdi_step_counter++;
-  /* clear external forces flag after integration */
+  // clear external forces flag after integration
   external_forces_pending = false;
 }
 
-void Run::parse_one_keyword(std::vector<std::string>& tokens)
+void Run::parse_one_keyword(
+  const std::vector<std::string>& tokens, const RunInput& run_input)
 {
-  int num_param = tokens.size();
+  if (tokens[0] == "replicate") {
+    PRINT_INPUT_ERROR("replicate must be the first effective command.");
+  }
+
+  const int num_param = tokens.size();
   const int max_num_param = 32;
   if (num_param > max_num_param)
     PRINT_INPUT_ERROR("The number of parameters should be less than 32.\n");
-  const char* param[max_num_param];
-  for (int n = 0; n < num_param; ++n) {
-    param[n] = tokens[n].c_str();
-  }
 
-  if (strcmp(param[0], "potential") == 0) {
-    force.parse_potential(param, num_param, box, atom.type.size());
-  } else if (strcmp(param[0], "replicate") == 0) {
-    Replicate(param, num_param, box, atom, group);
-    allocate_memory_gpu(group, atom, thermo);
-  } else if (strcmp(param[0], "minimize") == 0) {
+#ifdef GPUMD_WPE_ENABLED
+  force.wpe_process_command(tokens, atom.number_of_atoms);
+#endif
+
+  if (tokens[0] == "potential") {
+    force.parse_potential(tokens, box, atom.type.size(), run_input);
+  } else if (tokens[0] == "minimize") {
     Minimize minimize;
     minimize.parse_minimize(
-      param,
-      num_param,
-      integrate.fixed_group,
-      integrate.fixed_grouping_method,
+      tokens,
+      integrate.get_fixed_group(),
+      integrate.get_fixed_grouping_method(),
       force,
       box,
-      atom.position_per_atom,
-      atom.type,
-      group,
-      atom.potential_per_atom,
-      atom.force_per_atom,
-      atom.virial_per_atom);
-  } else if (strcmp(param[0], "compute_phonon") == 0) {
+      atom,
+      group);
+  } else if (tokens[0] == "compute_phonon") {
     Hessian hessian;
-    hessian.parse(param, num_param);
-    hessian.compute(
-      force,
-      box,
-      atom.cpu_position_per_atom,
-      atom.position_per_atom,
-      atom.type,
-      group,
-      atom.potential_per_atom,
-      atom.force_per_atom,
-      atom.virial_per_atom);
-  } else if (strcmp(param[0], "compute_cohesive") == 0) {
+    hessian.parse(tokens);
+    if (!has_replicate_) {
+      PRINT_INPUT_ERROR("replicate keyword not found in run.in file.");
+    }
+    hessian.compute(force, box, atom, group, replicate_size_);
+  } else if (tokens[0] == "compute_cohesive") {
     Cohesive cohesive;
-    cohesive.parse(param, num_param, 0);
-    cohesive.compute(
-      box,
-      atom.position_per_atom,
-      atom.type,
-      group,
-      atom.potential_per_atom,
-      atom.force_per_atom,
-      atom.virial_per_atom,
-      force);
-  } else if (strcmp(param[0], "compute_elastic") == 0) {
+    cohesive.parse(tokens, 0);
+    cohesive.compute(box, atom, group, force);
+  } else if (tokens[0] == "compute_elastic") {
     Cohesive cohesive;
-    cohesive.parse(param, num_param, 1);
-    cohesive.compute(
-      box,
-      atom.position_per_atom,
-      atom.type,
-      group,
-      atom.potential_per_atom,
-      atom.force_per_atom,
-      atom.virial_per_atom,
-      force);
-  } else if (strcmp(param[0], "change_box") == 0) {
-    parse_change_box(param, num_param);
-  } else if (strcmp(param[0], "velocity") == 0) {
-    parse_velocity(param, num_param);
-  } else if (strcmp(param[0], "ensemble") == 0) {
-    integrate.parse_ensemble(param, num_param, time_step, atom, box, group, thermo);
-  } else if (strcmp(param[0], "time_step") == 0) {
-    parse_time_step(param, num_param);
-  } else if (strcmp(param[0], "correct_velocity") == 0) {
-    parse_correct_velocity(param, num_param, group);
-  } else if (strcmp(param[0], "dump_thermo") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Thermo(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_position") == 0) {
-    PRINT_INPUT_ERROR(
-      "dump_position has been removed. "
-      "Use dump_xyz <interval> <filename> instead.");
-  } else if (strcmp(param[0], "dump_netcdf") == 0) {
-#ifdef USE_NETCDF
-    std::unique_ptr<Action> action;
-    action.reset(new DUMP_NETCDF(param, num_param, group, atom));
-    measure.actions.emplace_back(std::move(action));
-#else
-    PRINT_INPUT_ERROR("dump_netcdf is available only when USE_NETCDF flag is set.\n");
-#endif
-  } else if (strcmp(param[0], "plumed") == 0) {
-#ifdef USE_PLUMED
-    std::unique_ptr<Action> action;
-    action.reset(new PLUMED(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-#else
-    PRINT_INPUT_ERROR("plumed is available only when USE_PLUMED flag is set.\n");
-#endif
-  } else if (strcmp(param[0], "dump_restart") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Restart(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_velocity") == 0) {
-    PRINT_INPUT_ERROR(
-      "dump_velocity has been removed. "
-      "Use dump_xyz <interval> <filename> velocity instead.");
-  } else if (strcmp(param[0], "dump_force") == 0) {
-    PRINT_INPUT_ERROR(
-      "dump_force has been removed. "
-      "Use dump_xyz <interval> <filename> force instead.");
-  } else if (strcmp(param[0], "dump_exyz") == 0) {
-    PRINT_INPUT_ERROR(
-      "dump_exyz has been removed. "
-      "Use dump_xyz <interval> <filename> velocity force potential instead.");
-  } else if (strcmp(param[0], "dump_xyz") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_XYZ(param, num_param, group, atom));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_cg") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_CG(param, num_param, group));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_beads") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Beads(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_observer") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Observer(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_shock_nemd") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Shock_NEMD(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_dipole") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Dipole(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "dump_polarizability") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Dump_Polarizability(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "active") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Active(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_extrapolation") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Extrapolation(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_dos") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new DOS(param, num_param, group));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_sdc") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new SDC(param, num_param, group));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_msd") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new MSD(param, num_param, group, atom));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_rdf") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new RDF(param, num_param, box, atom.cpu_type_size));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_adf") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new ADF(param, num_param, box, number_of_types));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_orientorder") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new OrientOrder(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_angular_rdf") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new AngularRDF(param, num_param, box, number_of_types));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_dpdt") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Compute_dpdt(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_hac") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new HAC(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_viscosity") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Viscosity(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_hnemd") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new HNEMD(param, num_param, force));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_hnemdec") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new HNEMDEC(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_shc") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new SHC(param, num_param, group));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_gkma") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new MODAL_ANALYSIS(param, num_param, number_of_types, 0, force));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "compute_hnema") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new MODAL_ANALYSIS(param, num_param, number_of_types, 1, force));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "deform") == 0) {
-    integrate.parse_deform(param, num_param);
-  } else if (strcmp(param[0], "compute") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new Compute(param, num_param, group));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "fix") == 0) {
-    integrate.parse_fix(param, num_param, group);
-  } else if (strcmp(param[0], "move") == 0) {
-    integrate.parse_move(param, num_param, group);
-  } else if (strcmp(param[0], "electron_stop") == 0) {
-    electron_stop.parse(param, num_param, atom.number_of_atoms, number_of_types);
-  } else if (strcmp(param[0], "add_random_force") == 0) {
-    add_random_force.parse(param, num_param, atom.number_of_atoms);
-  } else if (strcmp(param[0], "add_force") == 0) {
-    add_force.parse(param, num_param, group);
-  } else if (strcmp(param[0], "add_spring") == 0) {
-    add_spring.parse(param, num_param, group, atom);
-  } else if (strcmp(param[0], "add_efield") == 0) {
-    add_efield.parse(param, num_param, group);
-  } else if (strcmp(param[0], "mc") == 0) {
-    mc.parse_mc(param, num_param, group, atom);
-  } else if (strcmp(param[0], "kspace") == 0) {
-    // nothing here; will be handled elsewhere
-  } else if (strcmp(param[0], "dftd3") == 0) {
-    // nothing here; will be handled elsewhere
-  } else if (strcmp(param[0], "compute_lsqt") == 0) {
-    std::unique_ptr<Action> action;
-    action.reset(new LSQT(param, num_param));
-    measure.actions.emplace_back(std::move(action));
-  } else if (strcmp(param[0], "run") == 0) {
-    parse_run(param, num_param);
-  } else {
-    PRINT_KEYWORD_ERROR(param[0]);
+    cohesive.parse(tokens, 1);
+    cohesive.compute(box, atom, group, force);
+  } else if (tokens[0] == "change_box") {
+    parse_change_box(tokens);
+  } else if (tokens[0] == "velocity") {
+    parse_velocity(tokens);
+  } else if (tokens[0] == "ensemble") {
+    integrate.parse_ensemble(tokens, atom, box, group);
+  } else if (tokens[0] == "time_step") {
+    parse_time_step(tokens);
+  } else if (tokens[0] == "correct_velocity") {
+    parse_correct_velocity(tokens, group);
+  } else if (tokens[0] == "fix") {
+    integrate.parse_fix(tokens, group);
+  } else if (tokens[0] == "move") {
+    integrate.parse_move(tokens, group);
+  } else if (tokens[0] == "kspace") {
+    if (has_seen_kspace_command) {
+      PRINT_INPUT_ERROR("kspace can only appear once.");
+    }
+    has_seen_kspace_command = true;
+  } else if (tokens[0] == "dftd3") {
+    if (has_seen_dftd3_command) {
+      PRINT_INPUT_ERROR("dftd3 can only appear once.");
+    }
+    has_seen_dftd3_command = true;
+  } else if (tokens[0] == "run") {
+    parse_run(tokens);
+  } else if (!measure.parse_action(
+               tokens,
+               number_of_types,
+               integrate,
+               group,
+               atom,
+               box,
+               force,
+               first_potential_filename_)) {
+    PRINT_KEYWORD_ERROR(tokens[0].c_str());
   }
 }
 
-void Run::parse_velocity(const char** param, int num_param)
+void Run::parse_velocity(const std::vector<std::string>& tokens)
 {
+  const int num_param = tokens.size();
+  double initial_temperature;
   int seed = 0;
   bool use_seed = false;
   if (!(num_param == 2 || num_param == 4)) {
-    PRINT_INPUT_ERROR("velocity should have 1 or 2 parameters.\n");
-  } else if (num_param == 4) {
-    // See https://github.com/brucefan1983/GPUMD/pull/768
-    // for the reason for putting this branch here.
-    use_seed = true;
-    if (!is_valid_int(param[3], &seed)) {
-      PRINT_INPUT_ERROR("seed should be a positive integer.\n");
-    }
+    PRINT_INPUT_ERROR("velocity should have 1 or 3 parameters.\n");
   }
 
-  if (!is_valid_real(param[1], &initial_temperature)) {
+  if (!is_valid_real(tokens[1], &initial_temperature)) {
     PRINT_INPUT_ERROR("initial temperature should be a real number.\n");
   }
   if (initial_temperature <= 0.0) {
     PRINT_INPUT_ERROR("initial temperature should be a positive number.\n");
   }
 
-  velocity.initialize(
+  if (num_param == 4) {
+    if (tokens[2] != "seed") {
+      PRINT_INPUT_ERROR("The second parameter for velocity should be 'seed'.\n");
+    }
+    use_seed = true;
+    if (!is_valid_int(tokens[3], &seed) || seed <= 0) {
+      PRINT_INPUT_ERROR("seed should be a positive integer.\n");
+    }
+  }
+
+  velocity.initialize_cpu(
     has_velocity_in_xyz,
     initial_temperature,
-    atom.cpu_mass,
-    atom.cpu_position_per_atom,
-    atom.cpu_velocity_per_atom,
-    atom.velocity_per_atom,
+    atom,
     use_seed,
     seed);
+  atom.velocity_per_atom.copy_from_host(atom.cpu_velocity_per_atom.data());
   if (!has_velocity_in_xyz) {
     printf("Initialized velocities with input T = %g K.\n", initial_temperature);
   }
 }
 
-void Run::parse_correct_velocity(const char** param, int num_param, const std::vector<Group>& group)
+void Run::parse_correct_velocity(
+  const std::vector<std::string>& tokens, const std::vector<Group>& group)
 {
+  const int num_param = tokens.size();
   printf("Correct linear and angular momenta.\n");
 
   if (num_param != 2 && num_param != 3) {
     PRINT_INPUT_ERROR("correct_velocity should have 1 or 2 parameters.\n");
   }
-  if (!is_valid_int(param[1], &velocity.velocity_correction_interval)) {
+  if (!is_valid_int(tokens[1], &velocity.velocity_correction_interval)) {
     PRINT_INPUT_ERROR("velocity correction interval should be an integer.\n");
   }
   if (velocity.velocity_correction_interval < 10) {
@@ -853,7 +633,7 @@ void Run::parse_correct_velocity(const char** param, int num_param, const std::v
   printf("    every %d steps.\n", velocity.velocity_correction_interval);
 
   if (num_param == 3) {
-    if (!is_valid_int(param[2], &velocity.velocity_correction_group_method)) {
+    if (!is_valid_int(tokens[2], &velocity.velocity_correction_group_method)) {
       PRINT_INPUT_ERROR("velocity correction group method should be an integer.\n");
     }
     if (velocity.velocity_correction_group_method < 0) {
@@ -874,18 +654,19 @@ void Run::parse_correct_velocity(const char** param, int num_param, const std::v
   velocity.do_velocity_correction = true;
 }
 
-void Run::parse_time_step(const char** param, int num_param)
+void Run::parse_time_step(const std::vector<std::string>& tokens)
 {
+  const int num_param = tokens.size();
   if (num_param != 2 && num_param != 3) {
     PRINT_INPUT_ERROR("time_step should have 1 or 2 parameters.\n");
   }
-  if (!is_valid_real(param[1], &time_step)) {
+  if (!is_valid_real(tokens[1], &time_step)) {
     PRINT_INPUT_ERROR("time_step should be a real number.\n");
   }
   printf("Time step for this run is %g fs.\n", time_step);
   time_step /= TIME_UNIT_CONVERSION;
   if (num_param == 3) {
-    if (!is_valid_real(param[2], &max_distance_per_step)) {
+    if (!is_valid_real(tokens[2], &max_distance_per_step)) {
       PRINT_INPUT_ERROR("max distance per step should be a real number.\n");
     }
     if (max_distance_per_step <= 0.0) {
@@ -895,27 +676,37 @@ void Run::parse_time_step(const char** param, int num_param)
   }
 }
 
-void Run::parse_run(const char** param, int num_param)
+void Run::parse_run(const std::vector<std::string>& tokens)
 {
+  const int num_param = tokens.size();
+  int number_of_steps;
   if (num_param != 2) {
     PRINT_INPUT_ERROR("run should have 1 parameter.\n");
   }
-  if (!is_valid_int(param[1], &number_of_steps)) {
+  if (!is_valid_int(tokens[1], &number_of_steps)) {
     PRINT_INPUT_ERROR("number of steps should be an integer.\n");
+  }
+  if (number_of_steps <= 0) {
+    PRINT_INPUT_ERROR("number of steps should be positive.\n");
+  }
+  if (!integrate.has_ensemble()) {
+    PRINT_INPUT_ERROR("An ensemble must be specified before each run.");
   }
   printf("Run %d steps.\n", number_of_steps);
 
-  // Skip execution if in MDI mode (MDI will control stepping)
-  if (skip_run_commands) {
+  // set target temperature for temperature-dependent NEP
+  force.set_temperature_range(
+    integrate.get_temperature1(), integrate.get_temperature2(), number_of_steps);
+
+  // In MDI mode the driver controls stepping, so record the requested run
+  // length but do not execute the run here.
+  if (skip_run_commands_) {
+    mdi_number_of_steps_ = number_of_steps;
     printf("  (skipping run execution in MDI mode)\n");
     return;
   }
 
-  // set target temperature for temperature-dependent NEP
-  force.temperature = integrate.temperature1;
-  force.delta_T = (integrate.temperature2 - integrate.temperature1) / number_of_steps;
-
-  perform_a_run();
+  perform_a_run(number_of_steps);
 }
 
 static __global__ void gpu_deform_atom(
@@ -944,36 +735,37 @@ static __global__ void gpu_deform_atom(
   }
 }
 
-void Run::parse_change_box(const char** param, int num_param)
+void Run::parse_change_box(const std::vector<std::string>& tokens)
 {
+  const int num_param = tokens.size();
   if (num_param != 2 && num_param != 4 && num_param != 7) {
     PRINT_INPUT_ERROR("change_box can only have 1 or 3 or 6 parameters\n.");
   }
 
   double deformation_matrix[3][3] = {0.0};
 
-  if (!is_valid_real(param[1], &deformation_matrix[0][0])) {
+  if (!is_valid_real(tokens[1], &deformation_matrix[0][0])) {
     PRINT_INPUT_ERROR("box change parameter in xx should be a number.");
   }
   deformation_matrix[1][1] = deformation_matrix[2][2] = deformation_matrix[0][0];
 
   if (num_param >= 4) {
-    if (!is_valid_real(param[2], &deformation_matrix[1][1])) {
+    if (!is_valid_real(tokens[2], &deformation_matrix[1][1])) {
       PRINT_INPUT_ERROR("box change parameter in yy should be a number.");
     }
-    if (!is_valid_real(param[3], &deformation_matrix[2][2])) {
+    if (!is_valid_real(tokens[3], &deformation_matrix[2][2])) {
       PRINT_INPUT_ERROR("box change parameter in zz should be a number.");
     }
   }
 
   if (num_param == 7) {
-    if (!is_valid_real(param[4], &deformation_matrix[1][2])) {
+    if (!is_valid_real(tokens[4], &deformation_matrix[1][2])) {
       PRINT_INPUT_ERROR("box change parameter in yz should be a number.");
     }
-    if (!is_valid_real(param[5], &deformation_matrix[0][2])) {
+    if (!is_valid_real(tokens[5], &deformation_matrix[0][2])) {
       PRINT_INPUT_ERROR("box change parameter in xz should be a number.");
     }
-    if (!is_valid_real(param[6], &deformation_matrix[0][1])) {
+    if (!is_valid_real(tokens[6], &deformation_matrix[0][1])) {
       PRINT_INPUT_ERROR("box change parameter in xy should be a number.");
     }
     deformation_matrix[1][0] = deformation_matrix[0][1];

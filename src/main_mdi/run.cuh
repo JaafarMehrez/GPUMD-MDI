@@ -18,15 +18,10 @@
 class Force;
 class Integrate;
 class Measure;
+class RunInput;
 
-#include "add_efield.cuh"
-#include "add_force.cuh"
-#include "add_spring.cuh"
-#include "add_random_force.cuh"
-#include "electron_stop.cuh"
 #include "force/force.cuh"
 #include "integrate/integrate.cuh"
-#include "mc/mc.cuh"
 #include "measure/measure.cuh"
 #include "model/atom.cuh"
 #include "model/box.cuh"
@@ -41,7 +36,8 @@ class Measure;
 class Run
 {
 public:
-  Run(bool skip_run = false, const std::string& run_input_file = "run.in");
+  Run(const RunInput& run_input, bool skip_run_commands = false);
+
   // MDI interface helpers
   int mdi_get_natoms();
   void mdi_get_positions(std::vector<double>& out_positions);
@@ -57,35 +53,40 @@ public:
   void mdi_finalize_for_mdi();
 
 private:
-  void execute_run_in();
-  void perform_a_run();
-  void parse_one_keyword(std::vector<std::string>& tokens);
+  void execute_run_in(const RunInput& run_input);
+  void perform_a_run(const int number_of_steps);
+  void compute_force();
+  void parse_one_keyword(
+    const std::vector<std::string>& tokens, const RunInput& run_input);
 
   // keyword parsing functions
-  void parse_neighbor(const char** param, int num_param);
-  void parse_velocity(const char** param, int num_param);
-  void parse_change_box(const char** param, int num_param);
-  void parse_correct_velocity(const char** param, int num_param, const std::vector<Group>& group);
-  void parse_time_step(const char** param, int num_param);
-  void parse_run(const char** param, int num_param);
+  void parse_velocity(const std::vector<std::string>& tokens);
+  void parse_change_box(const std::vector<std::string>& tokens);
+  void parse_correct_velocity(
+    const std::vector<std::string>& tokens, const std::vector<Group>& group);
+  void parse_time_step(const std::vector<std::string>& tokens);
+  void parse_run(const std::vector<std::string>& tokens);
 
-  // MDI bookkeeping (so dumping/measure works similarly to perform_a_run)
+  // MDI bookkeeping reused by the single-step driver loop
   int mdi_step_counter = 0;
-  std::string run_input_file = "run.in";
-
-  bool skip_run_commands = false; // when true, skip 'run' commands (MDI mode)
+  int mdi_number_of_steps_ = 0; // run length requested by the last 'run' command (for ramp/init)
+  double mdi_initial_time_step_ = 0.0; // fixed cap for the max-distance adaptive time step
+  bool skip_run_commands_ = false; // when true, 'run' commands are parsed but not executed
   bool external_forces_pending =
-    false;             // when true, use forces set by mdi_set_forces for next integrate
+    false; // when true, use forces supplied by mdi_set_forces for the next step
   bool external_energy_pending = false;
   bool external_stress_pending = false;
-  double external_total_energy = 0.0; // eV (system total)
+  double external_total_energy = 0.0;            // eV (system total)
   std::array<double, 9> external_stress = {0.0}; // eV/A^3 (3x3 row-major)
 
   int number_of_types; // number of atom types
   int has_velocity_in_xyz = 0;
-  int number_of_steps;        // number of steps in a specific run
-  double global_time = 0.0;   // run time of entire simulation (fs)
-  double initial_temperature; // initial temperature for velocity
+  bool has_seen_dftd3_command = false;
+  bool has_seen_kspace_command = false;
+  bool has_replicate_ = false;
+  int replicate_size_[3] = {1, 1, 1};
+  std::string first_potential_filename_;
+  double global_time = 0.0; // run time of entire simulation (fs)
   double time_step = 1.0 / TIME_UNIT_CONVERSION;
   double max_distance_per_step = -1.0;
   Atom atom;
@@ -96,11 +97,5 @@ private:
 
   Force force;
   Integrate integrate;
-  MC mc;
   Measure measure;
-  Electron_Stop electron_stop;
-  Add_Force add_force;
-  Add_Spring add_spring;
-  Add_Random_Force add_random_force;
-  Add_Efield add_efield;
 };

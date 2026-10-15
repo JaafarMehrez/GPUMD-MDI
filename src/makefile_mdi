@@ -1,5 +1,5 @@
 ###########################################################
-# Makefile for GPUMD MDI executable
+# Makefile for the GPUMD MDI executable
 # This creates a separate gpumd-mdi executable with MDI support
 # NOTE: Run this makefile from the src/ directory
 #
@@ -16,9 +16,9 @@
 ###########################################################
 CC = nvcc
 CUDA_ARCH=-arch=sm_60
-ifdef OS
+ifdef OS # For Windows with the cl.exe compiler
 CFLAGS = -O3 $(CUDA_ARCH)
-else
+else # For linux
 CFLAGS = -std=c++14 -O3 $(CUDA_ARCH)
 endif
 
@@ -39,6 +39,10 @@ ifdef MDI_LIB
   endif
   ifdef MDI_LIB_PATH
     LDFLAGS += -L$(MDI_LIB_PATH)
+    # Bake the library directory into the executable so the shared libmdi
+    # is found at runtime without needing LD_LIBRARY_PATH. nvcc does not
+    # accept -Wl,... directly, so forward the flags to the host linker.
+    LDFLAGS += -Xlinker -rpath -Xlinker $(MDI_LIB_PATH)
   endif
   LIBS += -lmdi
 endif
@@ -46,24 +50,22 @@ endif
 
 ###########################################################
 # source files for gpumd-mdi
+#
+# The MDI build replaces main_gpumd/main.cu and main_gpumd/run.cu with the
+# MDI-aware versions in main_mdi/. The remaining main_gpumd sources are reused.
 ###########################################################
 SOURCES_MDI =                     \
-	$(wildcard main_mdi/*.cu)    \
-	$(wildcard minimize/*.cu)    \
-	$(wildcard phonon/*.cu)      \
-	$(wildcard integrate/*.cu)   \
-	$(wildcard mc/*.cu)          \
-	$(wildcard force/*.cu)       \
-	$(wildcard measure/*.cu)     \
-	$(wildcard model/*.cu)       \
-	$(wildcard utilities/*.cu)   \
+	$(wildcard main_mdi/*.cu)     \
+	$(wildcard minimize/*.cu)     \
+	$(wildcard phonon/*.cu)       \
+	$(wildcard integrate/*.cu)    \
+	$(wildcard mc/*.cu)           \
+	$(wildcard force/*.cu)        \
+	$(wildcard measure/*.cu)      \
+	$(wildcard model/*.cu)        \
+	$(wildcard utilities/*.cu)    \
 	$(wildcard main_gpumd/velocity.cu) \
 	$(wildcard main_gpumd/cohesive.cu) \
-	$(wildcard main_gpumd/add_efield.cu) \
-	$(wildcard main_gpumd/add_force.cu) \
-	$(wildcard main_gpumd/add_spring.cu) \
-	$(wildcard main_gpumd/add_random_force.cu) \
-	$(wildcard main_gpumd/electron_stop.cu) \
 	$(wildcard main_gpumd/replicate.cu)
 
 ###########################################################
@@ -81,22 +83,15 @@ endif
 ###########################################################
 HEADERS =                         \
 	$(wildcard utilities/*.cuh)   \
+	$(wildcard main_gpumd/*.cuh)  \
+	$(wildcard main_mdi/*.cuh)    \
 	$(wildcard integrate/*.cuh)   \
 	$(wildcard mc/*.cuh)          \
 	$(wildcard minimize/*.cuh)    \
 	$(wildcard force/*.cuh)       \
 	$(wildcard measure/*.cuh)     \
 	$(wildcard model/*.cuh)       \
-	$(wildcard phonon/*.cuh)      \
-	$(wildcard main_mdi/*.cuh)    \
-	$(wildcard main_gpumd/velocity.cuh) \
-	$(wildcard main_gpumd/cohesive.cuh) \
-	$(wildcard main_gpumd/add_efield.cuh) \
-	$(wildcard main_gpumd/add_force.cuh) \
-	$(wildcard main_gpumd/add_spring.cuh) \
-	$(wildcard main_gpumd/add_random_force.cuh) \
-	$(wildcard main_gpumd/electron_stop.cuh) \
-	$(wildcard main_gpumd/replicate.cuh)
+	$(wildcard phonon/*.cuh)
 
 
 ###########################################################
@@ -124,13 +119,15 @@ force/%.obj: force/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 measure/%.obj: measure/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-main_mdi/%.obj: main_mdi/*.cu $(HEADERS)
+main_mdi/%.obj: main_mdi/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-utilities/%.obj: utilities/*.cu $(HEADERS)
+main_gpumd/%.obj: main_gpumd/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-model/%.obj: model/*.cu $(HEADERS)
+utilities/%.obj: utilities/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-phonon/%.obj: phonon/*.cu $(HEADERS)
+model/%.obj: model/%.cu $(HEADERS)
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+phonon/%.obj: phonon/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 else
 integrate/%.o: integrate/%.cu $(HEADERS)
@@ -145,15 +142,13 @@ measure/%.o: measure/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 main_mdi/%.o: main_mdi/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
+main_gpumd/%.o: main_gpumd/%.cu $(HEADERS)
+	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 utilities/%.o: utilities/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 model/%.o: model/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 phonon/%.o: phonon/%.cu $(HEADERS)
-	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-main_gpumd/%.obj: main_gpumd/%.cu $(HEADERS)
-	$(CC) $(CFLAGS) $(INC) -c $< -o $@
-main_gpumd/%.o: main_gpumd/%.cu $(HEADERS)
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 endif
 
