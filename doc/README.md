@@ -63,6 +63,12 @@ cd /path/to/GPUMD/src
 > MDI code paths; `MDI_LIB=1` links the real MDI library (`-lmdi`) using
 > `MDI_INC_PATH` / `MDI_LIB_PATH`. For a working executable that actually speaks MDI,
 > always pass `MDI_LIB=1` together with those two paths.
+>
+> When `MDI_LIB_PATH` is supplied the build also bakes an `rpath` into the
+> executable (`-Xlinker -rpath -Xlinker $(MDI_LIB_PATH)`), so a shared `libmdi`
+> is found at runtime without setting `LD_LIBRARY_PATH`. (If you have an older
+> build without the rpath, export
+> `LD_LIBRARY_PATH=/path/to/MDI_Library/install/lib64:$LD_LIBRARY_PATH`.)
 
 ---
 
@@ -97,15 +103,21 @@ MDI-related helper scripts are collected under:
   - reads forces (and energy) from `vasprun.xml`,
   - sends QM forces and energy back to `GPUMD`.
 
+- `tools/gpumd-mdi/mdi_test_driver.py`
+  Minimal VASP-free MDI DRIVER that computes simple Lennard-Jones forces in
+  Python. Useful for a quick end-to-end check of the ENGINE without any QM code
+  (see section 5b).
+
 An example input system is provided in:
 
 - `examples/gpumd_mdi/` (Cu dimer), containing
-  - `INCAR_template`, `POSCAR_template`, `POTCAR`, `run.in`, `model.xyz`
+  - `INCAR`, `POSCAR`, `POTCAR`, `run.in`, `model.xyz`
 
-> **Note:** `examples/gpumd_mdi/run.in` references the NEP potential
-> `../../potentials/nep/nep89_20250409/nep89_20250409.txt` relative to a GPUMD checkout.
-> Make sure that file is reachable from where you run the example, or edit `run.in` to
-> point at any valid GPUMD potential file.
+> **Note:** `examples/gpumd_mdi/run.in` ships with a placeholder potential path,
+> `potential /path/to/nep89_20250409.txt`. Edit it to point at a valid GPUMD
+> potential file (for example
+> `<GPUMD>/potentials/nep/nep89_20250409/nep89_20250409.txt`). The potential is
+> still loaded in MDI mode, even though the forces come from the DRIVER.
 
 ---
 
@@ -124,7 +136,7 @@ bash ../../tools/gpumd-mdi/run_mdi_vasp_gpumd.sh \
   --gpumd-bin /path/to/GPUMD/src/gpumd-mdi \
   --run-in run.in \
   --vasp-cmd "vasp_std" \
-  --poscar POSCAR_template \
+  --poscar POSCAR \
   --steps 3 \
   --no-cleanup
 ```
@@ -141,7 +153,7 @@ Key options:
   Command used to run VASP (`vasp_std`, `mpirun -n 8 vasp_std`, etc.).
 
 - `--poscar`
-  POSCAR template file (default: `POSCAR_template`).
+  POSCAR file (default: `POSCAR`).
 
 - `--steps`
   Number of MD steps controlled by the DRIVER.
@@ -160,6 +172,41 @@ The script:
 Standard `GPUMD` dump and compute keywords in `run.in` (for example, `dump_xyz`,
 `dump_thermo`, etc.) work as usual, so forces and thermodynamic quantities can be written
 to the standard output files while using QM forces from VASP.
+
+> **Small cells / multiple GPUs.** GPUMD auto-detects all visible GPUs and uses its
+> multi-GPU NEP path when more than one is present. That path requires each GPU's
+> domain to span at least **5× the NEP cutoff**, so a small cell (such as the
+> 2-atom Cu dimer in a 10 Å box) aborts with
+> `The longest direction has less than 5 times of the NEP cutoff per GPU.`
+> and the DRIVER then fails with `MDI_Recv failed` because the ENGINE has exited.
+> Restrict the ENGINE to a single GPU with `CUDA_VISIBLE_DEVICES=0 …`, or enlarge
+> the simulation cell.
+
+> **`POSCAR` is reused as the driver template.** The DRIVER reads `POSCAR` for the
+> lattice and atom types and rewrites it with the current coordinates each step, so
+> running the example modifies the tracked file. Restore it with
+> `git checkout examples/gpumd_mdi/POSCAR`.
+
+---
+
+## 5b. Quick test without VASP
+
+If you just want to verify that the ENGINE and the MDI plumbing work (no VASP
+required), use the bundled minimal DRIVER:
+
+```bash
+cd examples/gpumd_mdi
+
+# terminal 1 — GPUMD as MDI ENGINE (single GPU for small cells)
+CUDA_VISIBLE_DEVICES=0 /path/to/GPUMD/src/gpumd-mdi --mdi \
+  "-role ENGINE -name gpumd -method TCP -hostname localhost -port 8021" -in run.in
+
+# terminal 2 — VASP-free DRIVER (Lennard-Jones forces computed in Python)
+python3 ../../tools/gpumd-mdi/mdi_test_driver.py --port 8021 --steps 5
+```
+
+`mdi_test_driver.py` requests `<NATOMS`/`<COORDS`, sends `>ENERGY`/`>STRESS`/`>FORCES`,
+and finishes with `EXIT` — the same command flow the VASP DRIVER uses.
 
 ---
 

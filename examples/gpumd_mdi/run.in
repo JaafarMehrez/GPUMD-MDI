@@ -1,4 +1,4 @@
-potential   ../../potentials/nep/nep89_20250409/nep89_20250409.txt
+potential   /path/to/nep89_20250409.txt
 velocity    1
 
 ensemble nve
