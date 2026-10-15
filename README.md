@@ -3,7 +3,7 @@
 MDI (MolSSI Driver Interface) integration for [GPUMD](https://github.com/brucefan1983/GPUMD),
 allowing GPUMD to run as an MDI ENGINE coupled to other codes (e.g. VASP as a QM DRIVER).
 
-📝 **Blog post:** [GPUMD-MDI: A GPU Molecular-Dynamics Engine Behind the MolSSI Driver Interface](https://jaafarmehrez.github.io/blog/gpumd-mdi/)
+**Blog post:** [GPUMD-MDI: A GPU Molecular-Dynamics Engine Behind the MolSSI Driver Interface](https://jaafarmehrez.github.io/blog/gpumd-mdi/)
 — how the interface works, the MDI command loop, and a QM/MM example with VASP.
 
 > **Status:** maintained separately from the main GPUMD repository.
