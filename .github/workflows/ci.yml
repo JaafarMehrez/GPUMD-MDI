@@ -45,8 +45,13 @@ jobs:
           cp GPUMD-MDI/src/makefile_mdi $HOME/GPUMD/src/
 
       - name: Compile MDI translation units (-DUSE_MDI, catches API drift)
-        working-directory: $HOME/GPUMD/src
         run: |
+          # Do not use `working-directory: $HOME/...`: environment variables are
+          # not shell-expanded for container jobs, so the literal string reaches
+          # `docker exec -w` and the step dies before running anything. `cd`
+          # inside the script is shell-expanded as usual.
+          cd "$HOME/GPUMD/src"
+          export PATH="/usr/local/cuda/bin:$PATH"
           for f in main_mdi/*.cu; do
             nvcc -std=c++14 -O3 -arch=sm_70 -DUSE_MDI -I. -Imain_gpumd \
                  -c "$f" -o "/tmp/$(basename "$f" .cu).o"
@@ -69,8 +74,18 @@ jobs:
       - name: Clone and install MDI Library
         run: |
           git clone --depth 1 https://github.com/MolSSI-MDI/MDI_Library.git $HOME/MDI_Library
+          # Only the C API is needed to link GPUMD. The MDI defaults enable the
+          # Fortran and Python bindings, which require gfortran and Python dev
+          # headers that are not installed on this runner; switch them off (same
+          # configuration as the Dockerfile). A static libmdi is produced so no
+          # LD_LIBRARY_PATH is needed at link or run time.
           cmake -S $HOME/MDI_Library -B $HOME/MDI_Library/build \
-                -DCMAKE_INSTALL_PREFIX=$HOME/mdi-install
+                -DCMAKE_INSTALL_PREFIX=$HOME/mdi-install \
+                -DCMAKE_INSTALL_LIBDIR=lib \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DMDI_CXX=OFF -DMDI_Fortran=OFF -DMDI_Python=OFF \
+                -DMDI_PLUGINS=OFF -DMDI_USE_MPI=OFF -DMDI_TEST_CODES=OFF
           cmake --build $HOME/MDI_Library/build -j2
           cmake --install $HOME/MDI_Library/build
 
@@ -85,8 +100,11 @@ jobs:
           cp GPUMD-MDI/src/makefile_mdi $HOME/GPUMD/src/
 
       - name: Build gpumd-mdi (USE_MDI + MDI_LIB)
-        working-directory: $HOME/GPUMD/src
         run: |
+          # See the compile-check job: `cd` here instead of relying on
+          # `working-directory` with `$HOME` (not expanded for container jobs).
+          cd "$HOME/GPUMD/src"
+          export PATH="/usr/local/cuda/bin:$PATH"
           make -f makefile_mdi -j2 USE_MDI=1 MDI_LIB=1 \
             MDI_LIB_PATH=$HOME/mdi-install/lib \
             MDI_INC_PATH=$HOME/mdi-install/include
