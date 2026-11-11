@@ -31,6 +31,7 @@ endif
 INC = -I. -Imain_gpumd
 LDFLAGS =
 LIBS = -lcublas -lcusolver -lcufft
+LIBS += -lpthread
 
 # MDI library linking
 ifdef MDI_LIB
@@ -59,12 +60,15 @@ SOURCES_MDI =                     \
 	$(wildcard minimize/*.cu)     \
 	$(wildcard phonon/*.cu)       \
 	$(wildcard integrate/*.cu)    \
+	$(wildcard integrate/*/*.cu)  \
 	$(wildcard mc/*.cu)           \
 	$(wildcard force/*.cu)        \
 	$(wildcard force/*/*.cu)      \
 	$(wildcard measure/*.cu)      \
+	$(wildcard measure/*/*.cu)    \
 	$(wildcard model/*.cu)        \
 	$(wildcard utilities/*.cu)    \
+	$(wildcard utilities/*/*.cu)  \
 	$(wildcard main_gpumd/velocity.cu) \
 	$(wildcard main_gpumd/cohesive.cu) \
 	$(wildcard main_gpumd/replicate.cu)
@@ -84,14 +88,17 @@ endif
 ###########################################################
 HEADERS =                         \
 	$(wildcard utilities/*.cuh)   \
+	$(wildcard utilities/*/*.cuh) \
 	$(wildcard main_gpumd/*.cuh)  \
 	$(wildcard main_mdi/*.cuh)    \
 	$(wildcard integrate/*.cuh)   \
+	$(wildcard integrate/*/*.cuh) \
 	$(wildcard mc/*.cuh)          \
 	$(wildcard minimize/*.cuh)    \
 	$(wildcard force/*.cuh)       \
 	$(wildcard force/*/*.cuh)     \
 	$(wildcard measure/*.cuh)     \
+	$(wildcard measure/*/*.cuh)   \
 	$(wildcard model/*.cuh)       \
 	$(wildcard phonon/*.cuh)
 
